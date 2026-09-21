@@ -1,4 +1,4 @@
-name: W-Broadcaster-Bot
+name: W-Bot
 
 on:
   workflow_dispatch:
