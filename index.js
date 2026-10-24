@@ -1,8 +1,7 @@
 // ============================================================
-//  WhatsApp Button Agent  (no database, no Firebase)
+//  WhatsApp Menu Agent  v3  (no database, no Firebase)
 //  Number : 03019022815  ->  923019022815
-//  Install: npm i @whiskeysockets/baileys pino qrcode-terminal
-//  Run    : node wtpbot.js
+//  Run    : npm start   (node wtpbot.js)
 // ============================================================
 const {
     default: makeWASocket,
@@ -24,9 +23,12 @@ const BOT_NUMBER = "03019022815";
 const BRAND = "Demo Assistant";
 const SESSION_DIR = "session_bot";
 
+// false = plain numbered menu (works on EVERY phone, 100% reliable)
+// true  = also try WhatsApp quick-reply buttons (experimental: unofficial
+//         WhatsApp connections often cannot show real buttons)
+const USE_BUTTONS = false;
+
 // ───────────────────────── MENU TREE (edit freely) ─────────────────────────
-// Rules: max 3 buttons per screen. "children" are the next steps.
-// Back / Main Menu buttons are added automatically.
 const NODES = {
     main: {
         label: 'Main Menu',
@@ -65,28 +67,28 @@ const NODES = {
     },
     about: {
         label: 'About Us', parent: 'main',
-        text: `*About ${BRAND}*\n\nA WhatsApp assistant that answers instantly and guides you step by step with quick-reply buttons.`,
+        text: `*About ${BRAND}*\n\nA WhatsApp assistant that answers instantly and guides you step by step.`,
         children: []
     }
 };
 
-// Build the option list for a screen: [{id, label}]
 function optionsFor(nodeId) {
     const node = NODES[nodeId];
     const opts = node.children.map(id => ({ id, label: NODES[id].label }));
     if (nodeId !== 'main') {
-        if (opts.length < 3) opts.push({ id: node.parent, label: node.parent === 'main' ? 'Main Menu' : '⬅ Back' });
-        if (opts.length < 3 && node.parent !== 'main') opts.push({ id: 'main', label: 'Main Menu' });
+        opts.push({ id: node.parent, label: node.parent === 'main' ? 'Main Menu' : 'Back' });
+        if (node.parent !== 'main') opts.push({ id: 'main', label: 'Main Menu' });
     }
-    return opts.slice(0, 3);
+    return opts;
 }
 
 // ───────────────────────── HELPERS ─────────────────────────
-process.on('uncaughtException', (e) => console.log('⚠️ Uncaught:', e?.message));
-process.on('unhandledRejection', (e) => console.log('⚠️ Unhandled:', e?.message || e));
+process.on('uncaughtException', (e) => console.log('⚠️ Uncaught:', e?.stack || e));
+process.on('unhandledRejection', (e) => console.log('⚠️ Unhandled:', e?.stack || e));
 
 const delay = (ms) => new Promise(r => setTimeout(r, ms));
 const chatState = new Map(); // jid -> current node id
+const altJid = new Map();    // jid -> alternate jid (phone/LID form)
 
 function formatPhoneNumber(phone) {
     let c = String(phone).replace(/[^0-9]/g, '');
@@ -96,7 +98,7 @@ function formatPhoneNumber(phone) {
 }
 const DEVICE_ID = formatPhoneNumber(BOT_NUMBER);
 
-async function typing(sock, jid, ms = 900) {
+async function typing(sock, jid, ms = 700) {
     try {
         await sock.sendPresenceUpdate('composing', jid);
         await delay(ms);
@@ -104,61 +106,79 @@ async function typing(sock, jid, ms = 900) {
     } catch (e) {}
 }
 
+// Send with logging + fallback to the alternate JID
+async function safeSend(sock, jid, content) {
+    const targets = [jid];
+    if (altJid.get(jid)) targets.push(altJid.get(jid));
+    for (const t of targets) {
+        try {
+            const r = await sock.sendMessage(t, content);
+            console.log(`📤 Reply sent to ${t}`);
+            return r;
+        } catch (e) {
+            console.log(`❌ Send failed to ${t}: ${e.message}`);
+        }
+    }
+    return null;
+}
+
 // ───────────────────────── SEND A SCREEN ─────────────────────────
-// The numbered list is ALWAYS inside the message text, so even if
-// WhatsApp does not draw the buttons, the user can reply 1 / 2 / 3.
 async function sendScreen(sock, jid, nodeId) {
     chatState.set(jid, nodeId);
     const node = NODES[nodeId];
     const opts = optionsFor(nodeId);
 
-    const list = opts.map((o, i) => `${i + 1}. ${o.label}`).join('\n');
-    const hint = nodeId === 'main' ? '' : '\n_Reply 0 for Main Menu_';
-    const body = `${node.text}\n\n${list}\n\n_Tap a button or reply with a number._${hint}`;
+    const list = opts.map((o, i) => `*${i + 1}.* ${o.label}`).join('\n');
+    const hint = nodeId === 'main' ? '' : '\n_Reply *0* for Main Menu_';
+    const body = `${node.text}\n\n${list}\n\n_Reply with a number to continue._${hint}`;
 
     await typing(sock, jid);
 
-    try {
-        const msg = generateWAMessageFromContent(jid, {
-            viewOnceMessage: {
-                message: {
-                    messageContextInfo: { deviceListMetadata: {}, deviceListMetadataVersion: 2 },
-                    interactiveMessage: proto.Message.InteractiveMessage.create({
-                        body: { text: body },
-                        footer: { text: BRAND },
-                        header: { title: '', subtitle: '', hasMediaAttachment: false },
-                        nativeFlowMessage: {
-                            buttons: opts.map(o => ({
-                                name: 'quick_reply',
-                                buttonParamsJson: JSON.stringify({ display_text: o.label, id: 'go:' + o.id })
-                            }))
-                        }
-                    })
+    if (USE_BUTTONS) {
+        try {
+            const buttons = opts.slice(0, 3).map(o => ({
+                name: 'quick_reply',
+                buttonParamsJson: JSON.stringify({ display_text: o.label, id: 'go:' + o.id })
+            }));
+            const msg = generateWAMessageFromContent(jid, {
+                viewOnceMessage: {
+                    message: {
+                        messageContextInfo: { deviceListMetadata: {}, deviceListMetadataVersion: 2 },
+                        interactiveMessage: proto.Message.InteractiveMessage.create({
+                            body: { text: body },
+                            footer: { text: BRAND },
+                            header: { title: '', subtitle: '', hasMediaAttachment: false },
+                            nativeFlowMessage: { buttons }
+                        })
+                    }
                 }
-            }
-        }, {});
-
-        await sock.relayMessage(jid, msg.message, {
-            messageId: msg.key.id,
-            additionalNodes: [{
-                tag: 'biz', attrs: {},
-                content: [{
-                    tag: 'interactive', attrs: { type: 'native_flow', v: '1' },
-                    content: [{ tag: 'native_flow', attrs: { v: '9', name: 'mixed' } }]
+            }, {});
+            await sock.relayMessage(jid, msg.message, {
+                messageId: msg.key.id,
+                additionalNodes: [{
+                    tag: 'biz', attrs: {},
+                    content: [{
+                        tag: 'interactive', attrs: { type: 'native_flow', v: '1' },
+                        content: [{ tag: 'native_flow', attrs: { v: '9', name: 'mixed' } }]
+                    }]
                 }]
-            }]
-        });
-    } catch (e) {
-        console.log('⚠️ Buttons failed, sending plain text:', e.message);
-        await sock.sendMessage(jid, { text: body });
+            });
+            console.log(`📤 Button message relayed to ${jid}`);
+            return;
+        } catch (e) {
+            console.log('⚠️ Buttons failed, sending plain text:', e.message);
+        }
     }
+
+    await safeSend(sock, jid, { text: body });
 }
 
 // ───────────────────────── READ INCOMING ─────────────────────────
 function extractInput(msg) {
     let m = msg.message;
     if (!m) return { text: '', id: '' };
-    m = m.ephemeralMessage?.message || m.viewOnceMessage?.message || m.documentWithCaptionMessage?.message || m;
+    m = m.ephemeralMessage?.message || m.viewOnceMessage?.message ||
+        m.viewOnceMessageV2?.message || m.documentWithCaptionMessage?.message || m;
 
     let id = '';
     const nf = m.interactiveResponseMessage?.nativeFlowResponseMessage;
@@ -167,43 +187,50 @@ function extractInput(msg) {
 
     const text = m.conversation || m.extendedTextMessage?.text ||
                  m.buttonsResponseMessage?.selectedDisplayText ||
-                 m.interactiveResponseMessage?.body?.text || '';
+                 m.interactiveResponseMessage?.body?.text ||
+                 m.imageMessage?.caption || m.videoMessage?.caption || '';
     return { text: String(text).trim(), id };
 }
 
 async function handleIncoming(sock, msg) {
     const jid = msg.key.remoteJid;
-    if (!jid || msg.key.fromMe || jid.endsWith('@g.us') || jid === 'status@broadcast' || jid.endsWith('@newsletter')) return;
+    if (!jid) return;
+    if (msg.key.fromMe) return;
+    if (jid.endsWith('@g.us') || jid === 'status@broadcast' || jid.endsWith('@newsletter') || jid.endsWith('@broadcast')) return;
+
+    const alt = msg.key.remoteJidAlt || msg.key.participantAlt;
+    if (alt) altJid.set(jid, alt);
 
     const { text, id } = extractInput(msg);
-    if (!text && !id) return;
+    const kind = msg.message ? Object.keys(msg.message)[0] : 'none';
+    console.log(`📩 From ${jid} | type=${kind} | input="${id || text}"`);
 
-    console.log(`📩 ${jid} -> ${id || text}`);
+    if (!msg.message) return;
     try { await sock.readMessages([msg.key]); } catch (e) {}
 
-    // 1) Button tapped
+    // Button tapped
     if (id.startsWith('go:')) {
         const target = id.slice(3);
         if (NODES[target]) return sendScreen(sock, jid, target);
     }
 
-    const t = text.toLowerCase();
+    const t = text.toLowerCase().trim();
     const current = chatState.get(jid);
 
-    // 2) Typed number for the current screen
+    // Typed number
     if (current && /^[0-9]$/.test(t)) {
         if (t === '0') return sendScreen(sock, jid, 'main');
         const opt = optionsFor(current)[parseInt(t, 10) - 1];
         if (opt) return sendScreen(sock, jid, opt.id);
     }
 
-    // 3) Typed label of an option (e.g. "about us")
+    // Typed option name
     if (current) {
-        const byLabel = optionsFor(current).find(o => o.label.toLowerCase().replace('⬅ ', '') === t);
+        const byLabel = optionsFor(current).find(o => o.label.toLowerCase() === t);
         if (byLabel) return sendScreen(sock, jid, byLabel.id);
     }
 
-    // 4) Anything else (hi, hello, menu, random text) -> main menu
+    // Anything else (hi, hello, menu, random text) -> main menu
     return sendScreen(sock, jid, 'main');
 }
 
@@ -218,7 +245,8 @@ async function connectWhatsApp() {
         printQRInTerminal: false,
         logger: pino({ level: 'silent' }),
         browser: Browsers.ubuntu('Chrome'),
-        syncFullHistory: false
+        syncFullHistory: false,
+        markOnlineOnConnect: true
     });
 
     sock.ev.on('creds.update', saveCreds);
@@ -226,17 +254,24 @@ async function connectWhatsApp() {
     let pairingCodeRequested = false;
 
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
-        if (type !== 'notify') return;
+        console.log(`🔔 messages.upsert type=${type} count=${messages.length}`);
+        // 'notify' = new live message; 'append' can also carry fresh ones, so check age
         for (const msg of messages) {
-            try { await handleIncoming(sock, msg); }
-            catch (e) { console.log('❌ Handler error:', e.message); }
+            try {
+                if (type !== 'notify') {
+                    const ts = Number(msg.messageTimestamp || 0);
+                    if (!ts || Date.now() / 1000 - ts > 60) continue;
+                }
+                await handleIncoming(sock, msg);
+            } catch (e) {
+                console.log('❌ Handler error:', e?.stack || e);
+            }
         }
     });
 
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
 
-        // Not linked yet -> show QR link + pairing code in the logs
         if (qr && !sock.authState.creds.registered) {
             const qrLink = `https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=${encodeURIComponent(qr)}`;
             console.log('\n📷 SCAN QR: open this link and scan it (WhatsApp > Linked Devices > Link a device):');
@@ -260,21 +295,23 @@ async function connectWhatsApp() {
         }
 
         if (connection === 'open') {
-            console.log(`✅ Connected as ${DEVICE_ID}. Agent is live. Send "Hi" to this number from another phone.`);
+            console.log(`✅ Connected as ${DEVICE_ID}. Agent is LIVE. Send "Hi" to this number from another phone.`);
         }
 
         if (connection === 'close') {
             const reason = lastDisconnect?.error?.output?.statusCode;
+            console.log(`🔌 Connection closed (code ${reason})`);
             if (reason === DisconnectReason.loggedOut) {
                 console.log('❌ Logged out. Clearing session and starting fresh pairing...');
                 try { fs.rmSync(SESSION_DIR, { recursive: true, force: true }); } catch (e) {}
             } else {
-                console.log('🔄 Connection closed, reconnecting...');
+                console.log('🔄 Reconnecting...');
             }
             setTimeout(connectWhatsApp, 4000);
         }
     });
 }
 
-console.log(`🌟 ${BRAND} starting for ${BOT_NUMBER} (${DEVICE_ID})`);
+console.log(`🌟 ${BRAND} agent v3 starting for ${BOT_NUMBER} (${DEVICE_ID}) | buttons=${USE_BUTTONS}`);
 connectWhatsApp();
+setInterval(() => console.log(`💓 alive ${new Date().toISOString()}`), 10 * 60 * 1000);
