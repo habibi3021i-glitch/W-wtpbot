@@ -1,4 +1,4 @@
-name: W-Bot
+name: W-Bot07
 
 on:
   workflow_dispatch:
