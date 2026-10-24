@@ -3,22 +3,36 @@ name: W-Bot07
 on:
   push:
     branches: [main]
-  schedule:
-    - cron: '0 */6 * * *'
   workflow_dispatch:
+  schedule:
+    - cron: '0 */5 * * *'
 
 concurrency:
   group: wbot07
   cancel-in-progress: true
 
 jobs:
-  run:
+  build:
     runs-on: ubuntu-latest
-    timeout-minutes: 350
+    timeout-minutes: 340
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          node-version: 20
-      - run: npm i @whiskeysockets/baileys pino qrcode-terminal
-      - run: node wtpbot.js
+          node-version: '20'
+
+      - name: Restore WhatsApp session
+        uses: actions/cache@v4
+        with:
+          path: session_bot
+          key: wa-session-${{ github.run_id }}
+          restore-keys: wa-session-
+
+      - name: Install Dependencies
+        run: npm install
+
+      - name: Start WhatsApp Agent
+        run: npm start
