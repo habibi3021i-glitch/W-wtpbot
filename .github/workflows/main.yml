@@ -1,26 +1,24 @@
 name: W-Bot07
 
 on:
-  workflow_dispatch:
+  push:
+    branches: [main]
   schedule:
-    - cron: '0 */5 * * *' 
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: wbot07
+  cancel-in-progress: true
 
 jobs:
-  build:
+  run:
     runs-on: ubuntu-latest
+    timeout-minutes: 350
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
-          node-version: '20'
-
-      - name: Install Dependencies
-        run: npm install
-
-      - name: Start Multi-Device Broadcaster
-        env:
-          FIREBASE_URL: ${{ secrets.FIREBASE_URL }}
-        run: npm start
+          node-version: 20
+      - run: npm i @whiskeysockets/baileys pino qrcode-terminal
+      - run: node wtpbot.js
