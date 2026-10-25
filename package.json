@@ -1,13 +1,11 @@
 {
-  "name": "w-broadcaster-bot",
-  "version": "1.0.0",
-  "description": "Multi-Device WhatsApp SaaS Broadcaster",
-  "main": "index.js",
-  "scripts": {
-    "start": "node index.js"
-  },
+  "name": "waseem-restaurant-bot",
+  "version": "4.0.0",
+  "main": "wtpbot.js",
+  "scripts": { "start": "node wtpbot.js" },
   "dependencies": {
-    "@whiskeysockets/baileys": "^6.7.0",
-    "pino": "^8.19.0"
+    "@whiskeysockets/baileys": "latest",
+    "pino": "^9.0.0",
+    "qrcode-terminal": "^0.12.0"
   }
 }
