@@ -14,8 +14,11 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 340
+    timeout-minutes: 350
     steps:
+      - name: Wait for previous run to save session
+        run: sleep 40
+
       - name: Checkout Code
         uses: actions/checkout@v4
 
@@ -25,14 +28,22 @@ jobs:
           node-version: '20'
 
       - name: Restore WhatsApp session
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: session_bot
-          key: wa-session-${{ github.run_id }}
+          key: wa-session-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: wa-session-
 
       - name: Install Dependencies
         run: npm install
 
       - name: Start WhatsApp Agent
+        timeout-minutes: 330
         run: npm start
+
+      - name: Save WhatsApp session
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: session_bot
+          key: wa-session-${{ github.run_id }}-${{ github.run_attempt }}
